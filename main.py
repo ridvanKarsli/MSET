@@ -2,24 +2,20 @@
 import pandas as pd
 import numpy as np
 from datetime import timedelta
+from typing import List, Tuple, Optional
 from sklearn.metrics import mean_squared_error
 from mset.mset_predictor import mset_predict
 from utils.scaler import scale_data
 
-# === AYARLAR ===
-excel_path = 'data/Ünite 2 IDF A Bakım değerlendirme verileri copy.xlsx'
-makine_adi = "ÜNİTE 2 IDF A"
-rmse_esik = 2.0
-dogruluk_esik = 70.0
-zaman_araliklari_saat = [24, 12, 6, 3]  # saatlik analiz aralıkları
+# === SABİTLER ===
+EXCEL_PATH = 'data/Ünite 2 IDF A Bakım değerlendirme verileri copy.xlsx'  # Veri dosyasının yolu
+MACHINE_NAME = "ÜNİTE 2 IDF A"  # Analiz yapılacak makine adı
+RMSE_THRESHOLD = 2.0  # RMSE eşik değeri
+ACCURACY_THRESHOLD = 70.0  # Doğruluk oranı eşiği
+TIME_WINDOWS_HOURS = [24, 12, 6, 3]  # Saatlik analiz aralıkları
 
-# === VERİ OKUMA ===
-pre_df = pd.read_excel(excel_path, sheet_name='Bakım Öncesi IDF A Verileri', header=1)
-post_df = pd.read_excel(excel_path, sheet_name='Bakım Sonrası IDF A Verileri', header=1)
-pre_df.columns = pre_df.columns.str.strip()
-post_df.columns = post_df.columns.str.strip()
-
-features = [
+# Analizde kullanılacak sensör/sütun isimleri
+FEATURES = [
     'Klepe Pozisyonu', 'Akım (amper)', 'X vibrasyonu', 'Y vibrasyonu',
     'Motor Fan Tarafı Yatak Sıcaklığı', 'Motor Arka Yatak Sıcaklığı', 'Yağ Tankı Sıcaklığı',
     'Fan Yatak Sıcaklığı 1', 'Fan Yatak Sıcaklığı 2', 'Fan Yatak Sıcaklığı 3',
@@ -30,77 +26,152 @@ features = [
     'Motor W-Phase Sargı Sıcaklığı 1', 'Motor W-Phase Sargı Sıcaklığı 2'
 ]
 
-def convert_comma_to_dot(df):
+def convert_comma_to_dot(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    DataFrame'deki ondalık virgülleri noktaya çevirir ve boşlukları kaldırır.
+    Özellikle Türkçe Excel dosyalarında ondalık ayraç olarak virgül kullanıldığı için gereklidir.
+    """
     for col in df.columns:
         if df[col].dtype == object:
             df[col] = pd.to_numeric(df[col].str.replace(',', '.').str.replace(' ', ''), errors='coerce')
     return df
 
-pre_df['Tarih'] = pd.to_datetime(pre_df['Tarih'], errors='coerce')
-post_df['Tarih'] = pd.to_datetime(post_df['Tarih'], errors='coerce')
+def read_and_preprocess_data(excel_path: str, features: List[str]) -> Tuple[pd.DataFrame, pd.DataFrame, List[str]]:
+    """
+    Excel dosyasından bakım öncesi ve sonrası verileri okur, ön işler ve sabit sütunları eler.
+    """
+    pre_df = pd.read_excel(excel_path, sheet_name='Bakım Öncesi IDF A Verileri', header=1)
+    post_df = pd.read_excel(excel_path, sheet_name='Bakım Sonrası IDF A Verileri', header=1)
+    pre_df.columns = pre_df.columns.str.strip()
+    post_df.columns = post_df.columns.str.strip()
+    pre_df['Tarih'] = pd.to_datetime(pre_df['Tarih'], errors='coerce')
+    post_df['Tarih'] = pd.to_datetime(post_df['Tarih'], errors='coerce')
+    pre_df = convert_comma_to_dot(pre_df)
+    post_df = convert_comma_to_dot(post_df)
+    pre_df.dropna(inplace=True)
+    post_df.dropna(inplace=True)
+    # Sabit (değişmeyen) sütunları analizden çıkar
+    features_clean = features.copy()
+    for f in features.copy():
+        if pre_df[f].nunique() <= 1:
+            print(f"[UYARI] Sabit sütun çıkarıldı: {f}")
+            features_clean.remove(f)
+    return pre_df, post_df, features_clean
 
-pre_df = convert_comma_to_dot(pre_df)
-post_df = convert_comma_to_dot(post_df)
-pre_df.dropna(inplace=True)
-post_df.dropna(inplace=True)
+def analyze_time_windows(pre_df: pd.DataFrame, post_df: pd.DataFrame, features: List[str],
+                        memory: np.ndarray, time_windows: List[int], accuracy_threshold: float) -> Tuple[Optional[int], Optional[float], Optional[float]]:
+    """
+    Bakım sonrası verileri farklı zaman aralıklarında analiz eder.
+    İlk arıza tespit edilen zamanı ve ilgili RMSE/doğruluk değerlerini döndürür.
+    """
+    first_fault_time = None
+    first_fault_rmse = None
+    first_fault_acc = None
+    for hour in time_windows:
+        # Zaman aralığına göre veri dilimini seç
+        lower_bound = post_df['Tarih'].max() - timedelta(hours=hour)
+        upper_bound = post_df['Tarih'].max() - timedelta(minutes=1)
+        window_df = post_df[(post_df['Tarih'] >= lower_bound) & (post_df['Tarih'] < upper_bound)]
+        if window_df.empty:
+            print(f"[{hour} SAAT ÖNCE] Veri bulunamadı.")
+            continue
+        # Seçilen dilimi ölçekle
+        _, post_scaled_segment, _ = scale_data(pre_df, window_df, features)
+        valid_rows = ~np.isnan(post_scaled_segment).any(axis=1)
+        segment_scaled = post_scaled_segment[valid_rows]
+        # MSET ile tahmin ve hata hesapla
+        predictions = np.array([mset_predict(memory, obs) for obs in segment_scaled])
+        rmse = np.sqrt(mean_squared_error(segment_scaled, predictions))
+        mean_val = np.mean(np.abs(segment_scaled))
+        accuracy = 100 * (1 - rmse / mean_val) if mean_val > 1e-3 else None
+        print(f"\n[{hour} SAAT ÖNCE]")
+        print(f"RMSE: {rmse:.4f}")
+        print(f"Doğruluk: {accuracy:.2f}%" if accuracy is not None else "Doğruluk hesaplanamadı.")
+        # İlk arıza tespit edilen zamanı kaydet
+        if (accuracy is not None and accuracy < accuracy_threshold and first_fault_time is None):
+            first_fault_time = hour
+            first_fault_rmse = rmse
+            first_fault_acc = accuracy
+    return first_fault_time, first_fault_rmse, first_fault_acc
 
-for f in features.copy():
-    if pre_df[f].nunique() <= 1:
-        print(f"[UYARI] Sabit sütun çıkarıldı: {f}")
-        features.remove(f)
-
-pre_scaled, _, scaler = scale_data(pre_df, post_df, features)
-memory = pre_scaled.copy()
-
-# === OTOMATİK BAKIM TARİHİ BELİRLEME ===
-bakim_tarihi = post_df['Tarih'].max() - timedelta(minutes=1)  # son veri zamanından biraz öncesi
-print(f"Analiz için referans bakım tarihi: {bakim_tarihi}")
-
-# === ZAMANSAL ANALİZ (SAATLİK) ===
-for saat in zaman_araliklari_saat:
-    alt_sinir = bakim_tarihi - timedelta(hours=saat)
-    dilim_df = post_df[(post_df['Tarih'] >= alt_sinir) & (post_df['Tarih'] < bakim_tarihi)]
-    if dilim_df.empty:
-        print(f"[{saat} SAAT ÖNCE] Veri bulunamadı.")
-        continue
-
-    _, post_scaled_segment, _ = scale_data(pre_df, dilim_df, features)
-    valid_rows = ~np.isnan(post_scaled_segment).any(axis=1)
-    segment_scaled = post_scaled_segment[valid_rows]
-
-    predictions = np.array([mset_predict(memory, obs) for obs in segment_scaled])
-    rmse = np.sqrt(mean_squared_error(segment_scaled, predictions))
-    mean_val = np.mean(np.abs(segment_scaled))
+def full_analysis(pre_df: pd.DataFrame, post_df: pd.DataFrame, features: List[str], memory: np.ndarray) -> Tuple[float, Optional[float], np.ndarray]:
+    """
+    Tüm bakım sonrası veriler üzerinde genel analiz yapar.
+    RMSE, doğruluk ve sensör bazlı hata değerlerini döndürür.
+    """
+    filtered_post_scaled = scale_data(pre_df, post_df, features)[1]
+    valid_rows = ~np.isnan(filtered_post_scaled).any(axis=1)
+    filtered_post_scaled = filtered_post_scaled[valid_rows]
+    predictions = np.array([mset_predict(memory, obs) for obs in filtered_post_scaled])
+    rmse = np.sqrt(mean_squared_error(filtered_post_scaled, predictions))
+    mean_val = np.mean(np.abs(filtered_post_scaled))
     accuracy = 100 * (1 - rmse / mean_val) if mean_val > 1e-3 else None
+    feature_rmse = np.sqrt(((filtered_post_scaled - predictions) ** 2).mean(axis=0))
+    return rmse, accuracy, feature_rmse
 
-    print(f"\n[{saat} SAAT ÖNCE]")
+def print_fault_summary(first_fault_time: Optional[int], first_fault_rmse: Optional[float], first_fault_acc: Optional[float]):
+    """
+    Erken arıza tespitini ekrana yazdırır.
+    """
+    if first_fault_time is not None:
+        print(f"\n{'*'*40}")
+        print(f"ERKEN ARIZA TESPİTİ")
+        print(f"{'*'*40}")
+        print(f"Arıza ilk olarak [{first_fault_time} SAAT ÖNCE] tespit edildi!")
+        print(f"RMSE: {first_fault_rmse:.4f}")
+        print(f"Doğruluk: {first_fault_acc:.2f}%\n")
+        print(f"{'*'*40}\n")
+
+def print_analysis_report(rmse: float, accuracy: Optional[float], feature_rmse: np.ndarray, features: List[str]):
+    """
+    Genel analiz sonuçlarını ekrana yazdırır.
+    """
+    print(f"\n{'='*40}\n[GENEL ANALİZ] Sistem: {MACHINE_NAME}\n{'='*40}")
     print(f"RMSE: {rmse:.4f}")
-    print(f"Doğruluk: {accuracy:.2f}%" if accuracy is not None else "Doğruluk hesaplanamadı.")
+    if accuracy is not None:
+        print(f"Doğruluk: {accuracy:.2f}%")
+    else:
+        print("Doğruluk hesaplanamadı.")
 
-# === TAM ANALİZ ===
-filtered_post_scaled = scale_data(pre_df, post_df, features)[1]
-valid_rows = ~np.isnan(filtered_post_scaled).any(axis=1)
-filtered_post_scaled = filtered_post_scaled[valid_rows]
-predictions = np.array([mset_predict(memory, obs) for obs in filtered_post_scaled])
-rmse = np.sqrt(mean_squared_error(filtered_post_scaled, predictions))
-mean_val = np.mean(np.abs(filtered_post_scaled))
-accuracy = 100 * (1 - rmse / mean_val) if mean_val > 1e-3 else None
-feature_rmse = np.sqrt(((filtered_post_scaled - predictions) ** 2).mean(axis=0))
+def print_warning_or_normal(accuracy: Optional[float]):
+    """
+    Sistem durumu hakkında uyarı veya normal çalışıyor mesajı verir.
+    """
+    if accuracy is not None and accuracy < ACCURACY_THRESHOLD:
+        print(f"\n[UYARI] Anormal davranış tespit edildi. Bakım gerekebilir!\n")
+    else:
+        print("\nSistem normal çalışıyor.\n")
 
-print(f"\n[GENEL ANALİZ] Sistem: {makine_adi}")
-print(f"RMSE: {rmse:.4f}")
-print(f"Doğruluk: {accuracy:.2f}%" if accuracy is not None else "Doğruluk hesaplanamadı.")
+def print_feature_rmse(feature_rmse: np.ndarray, features: List[str]):
+    """
+    Sensör bazlı hata (RMSE) değerlerini ve en çok sapma gösteren sensörleri ekrana yazdırır.
+    """
+    sorted_features = sorted(zip(features, feature_rmse), key=lambda x: x[1], reverse=True)
+    print(f"{'-'*40}\nEn Çok Sapma Gösteren İlk 3 Sensör\n{'-'*40}")
+    for f, e in sorted_features[:3]:
+        print(f"- {f:<35} : {e:>7.2f}")
+    print(f"\n{'-'*40}\nTüm Sensör Farkları (RMSE)\n{'-'*40}")
+    print(f"{'Sensör Adı':<40} | {'RMSE':>8}")
+    print(f"{'-'*53}")
+    for f, e in sorted_features:
+        print(f"{f:<40} | {e:>8.4f}")
 
-if accuracy is not None and accuracy < dogruluk_esik:
-    print(f"[Uyarı] Anormal davranış tespit edildi. Bakım gerekebilir.")
-else:
-    print("Sistem normal çalışıyor.")
+def main():
+    # Veriyi oku ve ön işle
+    pre_df, post_df, features_clean = read_and_preprocess_data(EXCEL_PATH, FEATURES)
+    # Bakım öncesi verilerden hafıza oluştur
+    pre_scaled, _, _ = scale_data(pre_df, post_df, features_clean)
+    memory = pre_scaled.copy()
+    print(f"Analiz için referans bakım tarihi: {post_df['Tarih'].max() - timedelta(minutes=1)}")
+    # Zaman aralıklarında arıza tespiti yap
+    first_fault_time, first_fault_rmse, first_fault_acc = analyze_time_windows(
+        pre_df, post_df, features_clean, memory, TIME_WINDOWS_HOURS, ACCURACY_THRESHOLD)
+    # Genel analiz yap
+    rmse, accuracy, feature_rmse = full_analysis(pre_df, post_df, features_clean, memory)
+    print_analysis_report(rmse, accuracy, feature_rmse, features_clean)
+    print_fault_summary(first_fault_time, first_fault_rmse, first_fault_acc)
+    print_warning_or_normal(accuracy)
+    print_feature_rmse(feature_rmse, features_clean)
 
-sorted_features = sorted(zip(features, feature_rmse), key=lambda x: x[1], reverse=True)
-print("\nEn çok sapma gösteren sensörler:")
-for f, e in sorted_features[:3]:
-    print(f"- {f}: {e:.2f}")
-
-print("\nTüm sensör farkları (RMSE):")
-for f, e in sorted_features:
-    print(f"{f}: {e:.4f}")
+if __name__ == "__main__":
+    main()
