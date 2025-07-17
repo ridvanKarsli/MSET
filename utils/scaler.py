@@ -5,17 +5,19 @@ import pandas as pd
 from typing import List, Tuple
 import numpy as np
 
+# Verileri ölçeklendirmek için kullanılan fonksiyon
+# pre_df: Bakım öncesi veri seti
+# post_df: Bakım sonrası veri seti
+# features: Ölçeklenecek özelliklerin isim listesi
 def scale_data(pre_df: pd.DataFrame, post_df: pd.DataFrame, features: List[str]) -> Tuple[np.ndarray, np.ndarray, StandardScaler]:
     """
-    Scale pre and post data using StandardScaler fit on pre_df.
-    Args:
-        pre_df (pd.DataFrame): Pre-maintenance data.
-        post_df (pd.DataFrame): Post-maintenance data.
-        features (List[str]): List of feature column names.
-    Returns:
-        Tuple[np.ndarray, np.ndarray, StandardScaler]: Scaled pre, scaled post, and scaler object.
+    pre_df ve post_df veri setlerindeki belirtilen özellikleri, pre_df üzerinde eğitilen StandardScaler ile ölçeklendirir.
+    pre_df: Bakım öncesi veriler
+    post_df: Bakım sonrası veriler
+    features: Ölçeklenecek sütun isimleri
+    Geriye sırasıyla ölçeklenmiş pre_df, ölçeklenmiş post_df ve scaler nesnesini döndürür.
     """
-    scaler = StandardScaler()
-    pre_scaled = scaler.fit_transform(pre_df[features])
-    post_scaled = scaler.transform(post_df[features])
-    return pre_scaled, post_scaled, scaler
+    scaler = StandardScaler()  # StandardScaler nesnesi oluşturuluyor
+    pre_scaled = scaler.fit_transform(pre_df[features])  # Bakım öncesi verilerle scaler eğitiliyor ve ölçekleniyor
+    post_scaled = scaler.transform(post_df[features])    # Bakım sonrası veriler aynı scaler ile ölçekleniyor
+    return pre_scaled, post_scaled, scaler  # Sonuçlar döndürülüyor

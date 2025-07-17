@@ -3,17 +3,18 @@
 import numpy as np
 from typing import Any
 
+# Verilerden maksimum boyutta bir hafıza bankası oluşturur
+# data: Girdi veri dizisi
+# max_size: Hafızada tutulacak maksimum örnek sayısı
 def create_memory(data: np.ndarray, max_size: int = 100) -> np.ndarray:
     """
-    Create a memory bank from the given data with a maximum size.
-    If data is larger than max_size, randomly sample without replacement.
-    Args:
-        data (np.ndarray): Input data array.
-        max_size (int): Maximum number of samples to keep.
-    Returns:
-        np.ndarray: Memory array.
+    Verilen veri dizisinden maksimum boyutta bir hafıza bankası oluşturur.
+    Eğer veri boyutu max_size'dan büyükse, rastgele örnekler seçilir.
+    data: Girdi veri dizisi
+    max_size: Hafızada tutulacak maksimum örnek sayısı
+    Geriye hafıza dizisini döndürür.
     """
     if len(data) > max_size:
-        idx = np.random.choice(len(data), max_size, replace=False)
+        idx = np.random.choice(len(data), max_size, replace=False)  # Rastgele örnek seçimi
         return data[idx]
-    return data.copy()
+    return data.copy()  # Veri boyutu uygunsa doğrudan kopyala

@@ -8,12 +8,12 @@ from mset.mset_predictor import mset_predict
 from utils.scaler import scale_data
 
 # === SABİTLER ===
-EXCEL_PATH = 'data/Ünite 2 IDF A Bakım değerlendirme verileri copy.xlsx'  # Veri dosyasının yolu
-STARTUP_SHUTDOWN_PATH = 'data/IDF Verileri.xlsx'  # Başlatma/kapatma verileri
-MACHINE_NAME = "ÜNİTE 2 IDF A"  # Analiz yapılacak makine adı
-RMSE_THRESHOLD = 2.0  # RMSE eşik değeri
-ACCURACY_THRESHOLD = 70.0  # Doğruluk oranı eşiği
-TIME_WINDOWS_HOURS = [24, 12, 6, 3]  # Saatlik analiz aralıkları
+EXCEL_PATH = 'data/Ünite 2 IDF A Bakım değerlendirme verileri copy.xlsx'  # Bakım verilerinin bulunduğu Excel dosyasının yolu
+STARTUP_SHUTDOWN_PATH = 'data/IDF Verileri.xlsx'  # Makine başlatma ve kapatma verilerinin bulunduğu dosya
+MACHINE_NAME = "ÜNİTE 2 IDF A"  # Analiz yapılacak makinenin adı
+RMSE_THRESHOLD = 2.0  # RMSE hata eşiği
+ACCURACY_THRESHOLD = 70.0  # Doğruluk oranı eşiği (%)
+TIME_WINDOWS_HOURS = [24, 12, 6, 3]  # Analiz için kullanılacak saatlik zaman pencereleri
 
 # Analizde kullanılacak sensör/sütun isimleri
 FEATURES = [
@@ -33,38 +33,29 @@ STARTUP_FEATURES = [
     'IDF A X Vib.', 'IDF A Y Vib.', 'IDF A X Vib.2', 'IDF B Y Vib.'
 ]
 
+# DataFrame'deki ondalık virgülleri noktaya çevirir ve boşlukları kaldırır
+# Özellikle Türkçe Excel dosyalarında ondalık ayraç olarak virgül kullanıldığı için gereklidir
 def convert_comma_to_dot(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    DataFrame'deki ondalık virgülleri noktaya çevirir ve boşlukları kaldırır.
-    Özellikle Türkçe Excel dosyalarında ondalık ayraç olarak virgül kullanıldığı için gereklidir.
-    """
     for col in df.columns:
         if df[col].dtype == object:
             df[col] = pd.to_numeric(df[col].str.replace(',', '.').str.replace(' ', ''), errors='coerce')
     return df
 
+# Makine başlatma ve kapatma verilerini okur ve ayrıştırır
 def read_startup_shutdown_data(excel_path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Makine başlatma ve kapatma verilerini okur ve ayrıştırır.
-    """
     df = pd.read_excel(excel_path)
     df['Tarih Saat'] = pd.to_datetime(df['Tarih Saat'], errors='coerce')
     df = convert_comma_to_dot(df)
     df.dropna(inplace=True)
-    
     # İlk 50 veri başlatma, son 50 veri kapatma olarak kabul edilir
     startup_data = df.head(50)
     shutdown_data = df.tail(50)
-    
     print(f"Başlatma verileri: {len(startup_data)} kayıt")
     print(f"Kapatma verileri: {len(shutdown_data)} kayıt")
-    
     return startup_data, shutdown_data
 
+# Excel dosyasından bakım öncesi ve sonrası verileri okur, ön işler ve sabit sütunları eler
 def read_and_preprocess_data(excel_path: str, features: List[str]) -> Tuple[pd.DataFrame, pd.DataFrame, List[str]]:
-    """
-    Excel dosyasından bakım öncesi ve sonrası verileri okur, ön işler ve sabit sütunları eler.
-    """
     pre_df = pd.read_excel(excel_path, sheet_name='Bakım Öncesi IDF A Verileri', header=1)
     post_df = pd.read_excel(excel_path, sheet_name='Bakım Sonrası IDF A Verileri', header=1)
     pre_df.columns = pre_df.columns.str.strip()
@@ -83,15 +74,11 @@ def read_and_preprocess_data(excel_path: str, features: List[str]) -> Tuple[pd.D
             features_clean.remove(f)
     return pre_df, post_df, features_clean
 
+# Normal çalışma, başlatma ve kapatma verilerini birleştirerek gelişmiş bir hafıza oluşturur
 def create_enhanced_memory(pre_df: pd.DataFrame, startup_data: pd.DataFrame, shutdown_data: pd.DataFrame, features: List[str]) -> np.ndarray:
-    """
-    Normal çalışma, başlatma ve kapatma verilerini birleştirerek gelişmiş bir hafıza oluşturur.
-    """
     # Normal çalışma verilerini ölçekle
     pre_scaled, _, scaler = scale_data(pre_df, pre_df, features)
-
     # Başlatma/kapatma verilerinin sütunlarını normal çalışma sütunlarına eşleştir
-    # Eşleştirme sözlüğü (örnek)
     mapping = {
         'Akım (amper)': 'IDF A Amper',
         'Klepe Pozisyonu': 'IDF A Klepe',
@@ -124,12 +111,10 @@ def create_enhanced_memory(pre_df: pd.DataFrame, startup_data: pd.DataFrame, shu
     print(f"Gelişmiş hafıza: {enhanced_memory.shape[0]} kayıt (normal+başlatma+kapatma)")
     return enhanced_memory
 
+# Bakım sonrası verileri farklı zaman aralıklarında analiz eder
+# İlk arıza tespit edilen zamanı ve ilgili RMSE/doğruluk değerlerini döndürür
 def analyze_time_windows(pre_df: pd.DataFrame, post_df: pd.DataFrame, features: List[str],
                         memory: np.ndarray, time_windows: List[int], accuracy_threshold: float) -> Tuple[Optional[int], Optional[float], Optional[float]]:
-    """
-    Bakım sonrası verileri farklı zaman aralıklarında analiz eder.
-    İlk arıza tespit edilen zamanı ve ilgili RMSE/doğruluk değerlerini döndürür.
-    """
     first_fault_time = None
     first_fault_rmse = None
     first_fault_acc = None
@@ -160,11 +145,9 @@ def analyze_time_windows(pre_df: pd.DataFrame, post_df: pd.DataFrame, features: 
             first_fault_acc = accuracy
     return first_fault_time, first_fault_rmse, first_fault_acc
 
+# Tüm bakım sonrası veriler üzerinde genel analiz yapar
+# RMSE, doğruluk ve sensör bazlı hata değerlerini döndürür
 def full_analysis(pre_df: pd.DataFrame, post_df: pd.DataFrame, features: List[str], memory: np.ndarray) -> Tuple[float, Optional[float], np.ndarray]:
-    """
-    Tüm bakım sonrası veriler üzerinde genel analiz yapar.
-    RMSE, doğruluk ve sensör bazlı hata değerlerini döndürür.
-    """
     filtered_post_scaled = scale_data(pre_df, post_df, features)[1]
     valid_rows = ~np.isnan(filtered_post_scaled).any(axis=1)
     filtered_post_scaled = filtered_post_scaled[valid_rows]
@@ -175,10 +158,8 @@ def full_analysis(pre_df: pd.DataFrame, post_df: pd.DataFrame, features: List[st
     feature_rmse = np.sqrt(((filtered_post_scaled - predictions) ** 2).mean(axis=0))
     return rmse, accuracy, feature_rmse
 
+# Erken arıza tespitini ekrana yazdırır
 def print_fault_summary(first_fault_time: Optional[int], first_fault_rmse: Optional[float], first_fault_acc: Optional[float]):
-    """
-    Erken arıza tespitini ekrana yazdırır.
-    """
     if first_fault_time is not None:
         print(f"\n{'*'*40}")
         print(f"ERKEN ARIZA TESPİTİ")
@@ -188,10 +169,8 @@ def print_fault_summary(first_fault_time: Optional[int], first_fault_rmse: Optio
         print(f"Doğruluk: {first_fault_acc:.2f}%\n")
         print(f"{'*'*40}\n")
 
+# Genel analiz sonuçlarını ekrana yazdırır
 def print_analysis_report(rmse: float, accuracy: Optional[float], feature_rmse: np.ndarray, features: List[str]):
-    """
-    Genel analiz sonuçlarını ekrana yazdırır.
-    """
     print(f"\n{'='*40}\n[GENEL ANALİZ] Sistem: {MACHINE_NAME}\n{'='*40}")
     print(f"RMSE: {rmse:.4f}")
     if accuracy is not None:
@@ -199,19 +178,15 @@ def print_analysis_report(rmse: float, accuracy: Optional[float], feature_rmse: 
     else:
         print("Doğruluk hesaplanamadı.")
 
+# Sistem durumu hakkında uyarı veya normal çalışıyor mesajı verir
 def print_warning_or_normal(accuracy: Optional[float]):
-    """
-    Sistem durumu hakkında uyarı veya normal çalışıyor mesajı verir.
-    """
     if accuracy is not None and accuracy < ACCURACY_THRESHOLD:
         print(f"\n[UYARI] Anormal davranış tespit edildi. Bakım gerekebilir!\n")
     else:
         print("\nSistem normal çalışıyor.\n")
 
+# Sensör bazlı hata (RMSE) değerlerini ve en çok sapma gösteren sensörleri ekrana yazdırır
 def print_feature_rmse(feature_rmse: np.ndarray, features: List[str]):
-    """
-    Sensör bazlı hata (RMSE) değerlerini ve en çok sapma gösteren sensörleri ekrana yazdırır.
-    """
     sorted_features = sorted(zip(features, feature_rmse), key=lambda x: x[1], reverse=True)
     print(f"{'-'*40}\nEn Çok Sapma Gösteren İlk 3 Sensör\n{'-'*40}")
     for f, e in sorted_features[:3]:
@@ -222,25 +197,20 @@ def print_feature_rmse(feature_rmse: np.ndarray, features: List[str]):
     for f, e in sorted_features:
         print(f"{f:<40} | {e:>8.4f}")
 
+# Ana fonksiyon: Tüm analiz akışını başlatır
 def main():
     print("=== GELİŞMİŞ MSET ARIZA TESPİT SİSTEMİ ===")
     print("Makine başlatma/kapatma verileri dahil edilerek analiz yapılıyor...\n")
-    
     # Başlatma/kapatma verilerini oku
     startup_data, shutdown_data = read_startup_shutdown_data(STARTUP_SHUTDOWN_PATH)
-    
     # Ana verileri oku ve ön işle
     pre_df, post_df, features_clean = read_and_preprocess_data(EXCEL_PATH, FEATURES)
-    
     # Gelişmiş hafıza oluştur (normal + başlatma + kapatma verileri)
     enhanced_memory = create_enhanced_memory(pre_df, startup_data, shutdown_data, features_clean)
-    
     print(f"Analiz için referans bakım tarihi: {post_df['Tarih'].max() - timedelta(minutes=1)}")
-    
     # Zaman aralıklarında arıza tespiti yap
     first_fault_time, first_fault_rmse, first_fault_acc = analyze_time_windows(
         pre_df, post_df, features_clean, enhanced_memory, TIME_WINDOWS_HOURS, ACCURACY_THRESHOLD)
-    
     # Genel analiz yap
     rmse, accuracy, feature_rmse = full_analysis(pre_df, post_df, features_clean, enhanced_memory)
     print_analysis_report(rmse, accuracy, feature_rmse, features_clean)
